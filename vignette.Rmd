@@ -1,0 +1,342 @@
+---
+title: "Party and date hubs in protein-protein interaction networks"
+subtitle: "Advanced genomics' UNIMI project (AY 2021/2022)"
+author:
+  - name: "Emanuele Cavalleri (matriculation number: 985888)"
+    affiliation: "[Università degli Studi di Milano](https://www.unimi.it/en)"
+output: html_notebook 
+---
+
+This is my Advanced genomics' project for the AY 2021/2022. Data and code can be retrieved from the following [GitHub](https://github.com/emanuelecavalleri/partyANDdatePPnetworks) link.
+
+In protein-protein interaction ([PPI](https://en.wikipedia.org/wiki/Protein%E2%80%93protein_interaction) from now on) networks (therefore proteins that interact with many other proteins) we distinguish [hubs](https://en.wikipedia.org/wiki/Interactome#Hubs) (highly connected nodes/proteins) into party and date categories. This differentiation comes from an [analysis](https://www.nature.com/articles/nature02555) (Han et al.) where it was shown that hubs of the PPI network can be assigned to two different categories:\
+· Hubs that interact with many partners at the same moment (party hubs),  which also connect proteins within functional modules such as protein complexes. Party hubs components' expression is correlated with its interaction partners.\
+· Hubs that have many targets, but interact with only one or a few of them at any moment (date hubs). In contrast to party hubs, date hubs do not exhibit such a correlation and appear to connect different functional modules.\
+A popular PPI networks functional enrichment analysis tool is [STRING](https://string-db.org/).
+
+The validity of the date hub/party hub distinction was disputed, the concept might not be as general as it seemed when the original publication was presented. In particular, in this [paper](https://doi.org/10.1371/journal.pcbi.1000817), the authors showed that the reported importance of date hubs to network connectivity can in fact be attributed to a tiny subset of them.\
+The date/party distinction was originally motivated by an approximately bimodal distribution of hub co-expression, but this feature is not always robust to methodological changes. Additionally, topological properties of hubs do not in general correlate with co-expression. According to the paper, *thinking in terms of a date/party dichotomy for hubs in protein interaction networks is not meaningful, and it might be more useful to conceive of roles for protein-protein interactions rather than for individual proteins*.
+
+This project is based on the fact that the party and date hub concept may be interesting to be merged with another topological property of nodes, [betweenness centrality](https://en.wikipedia.org/wiki/Centrality#Betweenness_centrality), that we can use to introduce the bottleneck concept into the party/date hubs conceptualization. [*Betweenness (i.e., “bottleneck-ness”) is a much more significant indicator of essentiality than degree (i.e., “hub-ness”). Furthermore, bottlenecks correspond to the dynamic components of the interaction network—they are significantly less well coexpressed with their neighbors than non-bottlenecks, implying that expression dynamics is wired into the network topology.*](https://doi.org/10.1371/journal.pcbi.0030059.)
+
+Therefore, combining hubs and bottlenecks, we can define for instance the following categories of proteins, defined on topological properties: non-bottleneck hubs (NBH), bottleneck hubs (BH), bottleneck non-hubs (BNH) and non-bottleneck non-hubs (NBNH, the largest group by definition). 
+
+![](pcbi.0030059.g001.PNG_L.png)
+
+This project aims at integrating the 4 categories above with the idea of party and date hubs using an interactome for E. coli and a gene expression compendium (since the interaction among two proteins can only take place if the two proteins are expressed at the same moment, one can use gene expression compendia to assign the hubs to the party or date class).  The network is used to define the above groups based on the two topological properties (degree, to define hubness, and betweenness centrality, to define bottleneckness).
+
+Let's start reading [E. Coli protein physical links](https://github.com/emanuelecavalleri/partyANDdatePPnetworks/blob/main/511145.protein.physical.links.full.v11.0.txt?raw=true) txt file...
+```{r}
+rm(list=ls()) # Just good practice to ensure we'll work on a "clean" environment
+ECOPPITABLE <- read.table("https://github.com/emanuelecavalleri/partyANDdatePPnetworks/blob/main/511145.protein.physical.links.full.v11.0.txt?raw=true", header=TRUE)
+```
+and have a look at it.
+```{r}
+head(ECOPPITABLE)
+```
+*ECOPPITABLE* contains experimentally determined interactions. The *experiments* column indicates some sort of "confidence" in the experiment. We want to have a filter at some value to increase the confidence, and to accomplish that we first take a look at the "trend" of confidence values.
+```{r}
+# ECOPPITABLE's dimensions
+dim(ECOPPITABLE)
+# Confidence values > 0: 
+length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 0))])
+# Value of the min confidence value > 0:
+min(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 0))])
+# Number of values above certain threshold (useful to extract values' "trend") 
+c(
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 46))]),
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 100))]),
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 200))]),
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 300))]),
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 400))]),
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 500))]),
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 600))]),
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 700))]),
+  length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 800))])
+)
+# Max confidence value
+max(ECOPPITABLE$experiments) 
+```
+At a first glimpse, by looking at the number of entries for each subset, we can see number of items reaching a plateau around values > 400, in particular:
+```{r}
+# Value of the min confidence value > 400:
+min(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 400))])
+# Value of the min confidence value > 406:
+min(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 406))])
+```
+Great gap!
+```{r}
+# Number of values above 406 (values ≥ 762) threshold
+length(ECOPPITABLE$experiments[(which(ECOPPITABLE$experiments > 406))])
+```
+The plateau starts at confidence value = 762; this "empirical" stuff helped me retain an appropriate threshold might be 406/762. But let's go into further details and make a histogram and a barplot, after the removal of confidence values = 0.
+```{r}
+minExp <- 0
+# Remove confidence values = 0 while keeping only columns of interest for this project
+ECOEXP <- as.data.frame(cbind(ECOPPITABLE$protein1[ECOPPITABLE$experiments>minExp], ECOPPITABLE$protein2[ECOPPITABLE$experiments>minExp], ECOPPITABLE$experiments[ECOPPITABLE$experiments>minExp]))
+colnames(ECOEXP) <- c("p1", "p2", "weight")
+ECOEXP$weight <- as.numeric(ECOEXP$weight)
+
+barplot(ECOEXP$weight, ylab="Confidence", ylim=c(0,1000))
+hist(ECOEXP$weight, xlab="Confidence", xlim=c(0,1000), ylim=c(0,2000), main="Histogram of confidence values", col = c(rep("gray", 9), rep("red", 9)))
+legend("topright", c("Confidence values ≤ 406", "Confidence values > 406"), col=c("gray", "red"), lwd=10)
+```
+From the barplot we can see that above 400 we have less "density" (due to the 406-762 "gap" we talked before), and from the histogram we confirm our empirical plateau hypothesis. Being said that, we continue our analysis with a > 406 (or, equally, ≥ 762) confidence threshold (may be too high/have too little interactions? Results with a lower threshold showed similar results, but with a higher computational complexity).
+```{r}
+minExp <- 406
+# Remove confidence values > 406 while keeping only columns of interest for this project
+ECOEXP <- as.data.frame(cbind(ECOPPITABLE$protein1[ECOPPITABLE$experiments>minExp], ECOPPITABLE$protein2[ECOPPITABLE$experiments>minExp], ECOPPITABLE$experiments[ECOPPITABLE$experiments>minExp]))
+colnames(ECOEXP) <- c("p1", "p2", "weight")
+ECOEXP$weight <- as.numeric(ECOEXP$weight)
+```
+Below, we also define a much larger network obtained by transferring experimental information from other species (*experiments_transferred* column involved here). As above, we filter it to retain values for which confidence is relatively high, so let's have a look at the trend.
+```{r}
+minExp <- 0
+# Remove confidence values = 0 while keeping only columns of interest for this project
+ECOEXP_TRANSF <- as.data.frame(cbind(ECOPPITABLE$protein1[ECOPPITABLE$experiments_transferred>minExp], ECOPPITABLE$protein2[ECOPPITABLE$experiments_transferred>minExp], ECOPPITABLE$experiments_transferred[ECOPPITABLE$experiments_transferred>minExp]))
+colnames(ECOEXP_TRANSF) <- c("p1", "p2", "weight")
+ECOEXP_TRANSF$weight <- as.numeric(ECOEXP_TRANSF$weight)
+
+# Confidence values > 0:
+length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 0))])
+# Value of the min confidence value > 0:
+min(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 0))])
+# Number of values above certain threshold (useful to extract value's "trend") 
+c(
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 45))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 100))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 200))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 300))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 400))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 500))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 600))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 700))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 800))]),
+  length(ECOEXP_TRANSF$weight[(which(ECOEXP_TRANSF$weight > 900))])
+)
+# Max confidence value
+max(ECOEXP_TRANSF$weight) 
+```
+And then, as previously done, we make a barplot and a histogram to help us.
+```{r}
+barplot(ECOEXP_TRANSF$weight, ylab="Confidence", ylim=c(0,1000))
+hist(ECOEXP_TRANSF$weight, xlab="Confidence", xlim=c(0,1000), ylim=c(0,60000), main="Histogram of confidence values", col = c(rep("gray", 9), rep("red", 11)))
+```
+Which is the value for an appropriate threshold?
+```{r}
+tail(table(ECOEXP_TRANSF$weight), n=300)
+```
+I'll keep values > 448 (but I retain keeping values ≥ 792 wouldn't be an error since we have very little values between 448 and 792, similarly to the previous analysis when we talked about the 406-762 "gap").
+```{r}
+minExp <- 448
+# Remove confidence values > 448 while keeping only columns of interest for this project
+ECOEXP_TRANSF <- as.data.frame(cbind(ECOPPITABLE$protein1[ECOPPITABLE$experiments_transferred>minExp], ECOPPITABLE$protein2[ECOPPITABLE$experiments_transferred>minExp], ECOPPITABLE$experiments_transferred[ECOPPITABLE$experiments_transferred>minExp]))
+colnames(ECOEXP_TRANSF) <- c("p1", "p2", "weight")
+ECOEXP_TRANSF$weight <- as.numeric(ECOEXP_TRANSF$weight)
+```
+For the moment, let's focus on the network with experimentally verified interactions only.
+```{r}
+library(igraph)
+GEXP <- graph.data.frame(ECOEXP)
+```
+And extract connected components, also having a look at the graph using [Cytoscape](https://cytoscape.org/).
+```{r}
+CC <- components(GEXP)
+# How many?
+length(unique(CC$membership))
+we <- get.edge.attribute(GEXP,"weight")
+library(RCy3)
+library(plyr)
+cytoscapePing() # Note that Cytoscape must be installed and run to ping it
+createNetworkFromIgraph(GEXP,new.title='GEXP')
+```
+
+![](./1.pdf){width=100% height=450}
+
+Alternatively, we can do the above for *ECOEXP_TRANSF*, getting a much denser (more connected) network. We'll use the last mentioned network for further analysis.
+```{r}
+GEXP_TRANSF <- graph.data.frame(ECOEXP_TRANSF)
+CCT <- components(GEXP_TRANSF)
+# How many?
+length(unique(CCT$membership))
+weT <- get.edge.attribute(GEXP_TRANSF,"weight")
+# To filter it (we won't need to do it because we have already filtered low confidence values):
+# GEXP_TRANSF <- delete_edges(GEXP_TRANSF, edges = which(weT < minExp))
+# CCT <- components(GEXP_TRANSF) 
+createNetworkFromIgraph(GEXP_TRANSF,new.title='GEXP_TRANSF')
+```
+
+![](./2.pdf){width=100% height=450}
+
+To identify non-bottleneck hubs and bottleneck hubs we calculate the betweenness centrality (high value == bottleneck).
+```{r}
+BET <- betweenness(GEXP_TRANSF, directed=FALSE)
+hist(BET)
+```
+As they did in papers, we simply define bottlenecks on the basis of the quantile.
+```{r}
+# 0.9 threshold to consider a protein a bottleneck in the PPI
+BET_TAU <- quantile(BET, 0.9)
+GEXP_TRANSF_DEG <- igraph::degree(GEXP_TRANSF)
+```
+Then we define HUBS.
+```{r}
+# 0.9 threshold to consider a protein a hub in the PPI
+DEG_TAU <- quantile(GEXP_TRANSF_DEG, 0.9)
+```
+To select bottleneck-hubs (BH) we combine the thresholds to identify a set of proteins fulfilling both.
+```{r}
+BH <- V(GEXP_TRANSF)$name[BET>=BET_TAU & GEXP_TRANSF_DEG>=DEG_TAU]
+```
+Select non-bottleneck hubs (NBH):
+```{r}
+NBH <- V(GEXP_TRANSF)$name[BET<BET_TAU & GEXP_TRANSF_DEG>=DEG_TAU]
+```
+Select bottleneck non-hub (BNH):
+```{r}
+BNH <- V(GEXP_TRANSF)$name[BET>=BET_TAU & GEXP_TRANSF_DEG<DEG_TAU]
+```
+Select non-bottleneck non hubs NBNH:
+```{r}
+NBNH <- V(GEXP_TRANSF)$name[BET<BET_TAU & GEXP_TRANSF_DEG<DEG_TAU]
+```
+Check the length of the vectors:
+```{r}
+c(
+  length(BH), length(NBH), length(BNH), length(NBNH)
+)
+```
+Non-bottleneck non-hubs (NBNH) are the largest group as said by the very beginning. 
+
+In this project, instead of having to do with a list of essential genes such that you can simply calculate the length of the intersection, we need to calculate a correlation coefficient distribution for all the interactors of the proteins within each of the BH and NBH (in this project we focus on hubs). Therefore, at this point we download gene expression levels from a provided [gene expression compendium for E. coli](https://github.com/emanuelecavalleri/partyANDdatePPnetworks/blob/main/Ecoli_compendium.RData?raw=true), then we'll match protein names here in the graph and in the compendium.
+```{r}
+load(url("https://github.com/emanuelecavalleri/partyANDdatePPnetworks/blob/main/Ecoli_compendium.RData?raw=true")) # From now on we'll focus on ZL2 matrix, but we have 3 different versions of a gene expression compendium for E. coli (we could've used ALL_FINAL_Nreads and ALL_FINAL_TPM too). Moreover, we don’t care on conditions (columns of the matrices) in this project
+```
+For instance, to have an idea about the content of the matrix, here we report the 6 first conditions' gene expression levels for the entry *b3065*, which is a small subunit ribosomal protein belonging to the bacterial ribosomal protein bS21 family also known as "rpsU".
+```{r}
+head(ZL2["b3065",])
+```
+For the sake of completeness here we add [STRING](https://string-db.org/cgi/network?taskId=bSmsXeUVivl1&sessionId=b7r5omAWO0QQ) and [AlphaFold](https://alphafold.ebi.ac.uk/entry/A0A133N3M7) entries relative to b3065/rpsU.
+
+![[STRING](https://string-db.org/cgi/network?taskId=bSmsXeUVivl1&sessionId=b7r5omAWO0QQ)](string_hires_image.png)
+
+![[AlphaFold](https://alphafold.ebi.ac.uk/entry/A0A133N3M7)](alpha.png)
+
+We are interested in how much the interactors are correlated; before the loop to calculate the pearsons for each member of the bottleneck hub (BH) group, we define:
+```{r}
+fixed_intervals <- seq(-1.05, 1.05, .1)
+allpearsonsBH <- matrix(0, ncol=length(fixed_intervals)-1, nrow=length(BH))
+```
+Now iterate over the BH:
+```{r}
+for(i in 1:length(BH)){
+  # Neighbor genes such that we can extract the corresponding rows
+  # from the compendium 
+  hub_interactors <- neighborhood(GEXP_TRANSF,nodes=BH[i])[[1]]
+  # BH[i] is the first in the hub_interactors list of interactors
+  # extracted with neighborhood, therefore it is in first row;
+  # we are interested in the correlation of interactors of BH[i]
+  # when BH[i] is "present", therefore:
+  match <- match(names(hub_interactors), rownames(ZL2))
+  extractedrows <- ZL2[match,]
+  bhi_expressed <- which(extractedrows[1,] > mean(extractedrows[1,]))
+  extractedrows <- extractedrows[,bhi_expressed]
+  # Remove the hub under analysis:
+  extractedrows <- extractedrows[-1,]
+  # Calculate a matrix of correlation of all proteins interacting
+  # with BH[i] vs themselves in all combinations:
+  pearsons <- cor(t(extractedrows))
+  # Additionally we treat all of them at once, we transform it into a vector
+  pearsons <- pearsons[upper.tri(pearsons)]
+  # Now we store the distribution of pearsons for each member 
+  # of the category (here BH) and then put them together;
+  # this can be done by putting all pearson values together for all members
+  # of a group and then plot histograms.
+  # In doing so however, hubs with larger number of interactors will get more weight.
+  par(mfrow=c(1,2)) # Setting the plotting area into a 1*2 array
+  if(i >=1 && i <= 3){
+    # We'll show you only the first 3 plots for ease of visualization.
+    # To give the same weight to the distribution of pearsons value for different hubs:
+    h <- hist(pearsons, breaks=fixed_intervals)
+    # h$counts/sum(h$counts) and h$mids indicates the middle point of each interval.
+    # Then, within the loop, we calculate the above histogram
+    plot(h$mids, h$counts/sum(h$counts))
+  }
+  else
+    h <- hist(pearsons, breaks=fixed_intervals, plot=FALSE)
+  # and store pearsons correlation coefficients:
+  allpearsonsBH[i,] <- h$counts/sum(h$counts)
+}
+```
+At the end we have *allpearsonsBH* populated by the values of all members of the group. Are all BH similar/different for the way their targets are correlated?
+```{r}
+library(pheatmap)
+colnames(allpearsonsBH) <- h$mids
+pheatmap(allpearsonsBH, cluster_cols = FALSE)
+```
+For party hubs most interactors should be coexpressed at the same time,: we notice a peak on the right (the previous choice of a high threshold highlights this fact).\
+Conversely, date hubs interact with different interactors at different times, therefore the distribution of correlations among the interactors should be more flat or with several peaks.
+```{r}
+allpearsonsNBH <- matrix(0, ncol=length(fixed_intervals)-1, nrow=length(NBH))
+for(i in 1:length(NBH)){
+  hub_interactors <- neighborhood(GEXP_TRANSF,nodes=NBH[i])[[1]]
+  match <- match(names(hub_interactors), rownames(ZL2))
+  extractedrows <- ZL2[match,]
+  nbhi_expressed <- which(extractedrows[1,] > mean(extractedrows[1,]))
+  extractedrows <- extractedrows[,nbhi_expressed]
+  extractedrows <- extractedrows[-1,]
+  pearsons <- cor(t(extractedrows))
+  pearsons <- pearsons[upper.tri(pearsons)]
+  par(mfrow=c(1,2))
+  if(i >= 1 && i <= 3){
+    h <- hist(pearsons, breaks=fixed_intervals)
+    plot(h$mids, h$counts/sum(h$counts))
+  }
+  else
+    h <- hist(pearsons, breaks=fixed_intervals, plot=FALSE)
+  allpearsonsNBH[i,] <- h$counts/sum(h$counts)
+}
+colnames(allpearsonsNBH) <- h$mids
+pheatmap(allpearsonsNBH, cluster_cols = FALSE)
+```
+We can confirm our hypothesis: we can identify peaks in the heatmap and a more "scattered" plot. The fact that several peaks are present may be an indication of multiple complexes formed by the hub and also of many different interactions with one or a few partners at a time.
+
+Let's now see if there is some inner structure by using some dimensionality reduction technique such as [UMAP](https://en.wikipedia.org/wiki/Nonlinear_dimensionality_reduction#Uniform_manifold_approximation_and_projection) and [PCA](https://en.wikipedia.org/wiki/Principal_component_analysis) on BH and NBH groups: we'll focus on UMAP first.
+```{r}
+library(uwot)
+UBH <- umap(allpearsonsBH, n_components = 3, n_neighbors = 2)
+library(rgl)
+options(rgl.useNULL = TRUE)
+plot3d(x=UBH[,1], y=UBH[,2], z=UBH[,3], col="red")
+rglwidget()
+UNBH <- umap(allpearsonsNBH, n_components = 3)
+plot3d(x=UNBH[,1], y=UNBH[,2], z=UNBH[,3], col="green")
+rglwidget()
+```
+And what if we join the *allpearsonsBH* and *allpearsonsNBH* and do the same? We can also color BH and NBH items differently to see if they group together.
+```{r}
+allpearsons <- rbind(allpearsonsBH, allpearsonsNBH)
+U <- umap(allpearsons, n_components = 3)
+plot3d(x=U[,1], y=U[,2], z=U[,3], col = c(rep("red", length(BH)), rep("green", length(NBH))))
+legend3d("topright", legend = c('BH', 'NBH'), pch = 16, col = c("red", "green"), cex=1, inset=c(0.02))
+rglwidget()
+```
+We can recognize three groups of interest in the space. Focusing on BH points we can notice that the 13 points belonging to that category are not all grouped together, but we can see that the majority are within a precise region of the 3D space and that the three/four outside the "condensed" region seem to follow a precise trajectory toward the other two NBH groups, so maybe a sign of similar behavior. In other words, BH points are not isolated in the space, but within regions also populated by NBH points (at least one BH point in any NBH region).
+
+Now let's focus onto PCA technique.
+```{r}
+PCA <- prcomp(allpearsons)
+scores = as.data.frame(PCA$x)
+library(ggplot2)
+ggplot(data = scores, aes(x = PC1, y = PC2, label = rownames(scores))) +
+  geom_hline(yintercept = 0, colour = "gray65") +
+  geom_vline(xintercept = 0, colour = "gray65") +
+  geom_text(colour = c(rep("red", length(BH)), rep("green", length(NBH))), alpha = 0.8, size = 4)
+```
+PCA makes it even clearer definitely confirming our results previously obtained: red points (coming from the BH group), except for points 2 and 3 and if you want 13 (similarly to the 3/4 points distant from the most populated group in UMAP 3D plot), tend to group together, while other ones (belonging to the NBH group) tend to be sparser (curiously similar to the fact that previously we obtained a more "scattered" heatmap).
+
+# Session infos:
+```{r}
+cytoscapeVersionInfo()
+sessionInfo()
+```
